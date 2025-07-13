@@ -66,7 +66,9 @@ app.get('/open', async (req, res) => {
   try {
     await controlGpio(RELAY_PIN, 1);
     isDoorLocked = false;
-    io.emit('door_status', { locked: false, source: 'http' });
+   
+    io.emit('door_status', { locked: false, source: 'api' });
+
     res.json({ status: 'success', message: 'Door unlocked', locked: false });
   } catch (error) {
     res.status(500).json({ 
@@ -81,7 +83,9 @@ app.get('/lock', async (req, res) => {
   try {
     await controlGpio(RELAY_PIN, 0);
     isDoorLocked = true;
-    io.emit('door_status', { locked: true, source: 'http' });
+    
+    io.emit('door_status', { locked: false, source: 'api' });
+
     res.json({ status: 'success', message: 'Door locked', locked: true });
   } catch (error) {
     res.status(500).json({ 
@@ -101,32 +105,31 @@ io.on('connection', (socket) => {
   socket.on('ping', (cb) => cb());
   
   socket.on('unlock_door', async () => {
-    try {
-      await controlGpio(RELAY_PIN, 1);
-      isDoorLocked = false;
-      io.emit('door_status', { locked: false, source: socket.id });
-    } catch (error) {
-      console.error('Unlock failed:', error);
-      socket.emit('operation_error', { 
-        operation: 'unlock', 
-        error: error.message 
-      });
-    }
-  });
-  
-  socket.on('lock_door', async () => {
-    try {
-      await controlGpio(RELAY_PIN, 0);
-      isDoorLocked = true;
-      io.emit('door_status', { locked: true, source: socket.id });
-    } catch (error) {
-      console.error('Lock failed:', error);
-      socket.emit('operation_error', { 
-        operation: 'lock', 
-        error: error.message 
-      });
-    }
-  });
+  try {
+    await controlGpio(RELAY_PIN, 1);
+    isDoorLocked = false;
+    io.emit('door_status', { locked: false, source: 'flutter' }); // <- Fix here
+  } catch (error) {
+    socket.emit('operation_error', {
+      operation: 'unlock',
+      error: error.message
+    });
+  }
+});
+
+socket.on('lock_door', async () => {
+  try {
+    await controlGpio(RELAY_PIN, 0);
+    isDoorLocked = true;
+    io.emit('door_status', { locked: true, source: 'flutter' }); // <- Fix here
+  } catch (error) {
+    socket.emit('operation_error', {
+      operation: 'lock',
+      error: error.message
+    });
+  }
+});
+
   
   socket.on('disconnect', (reason) => {
     console.log(`Client disconnected: ${socket.id} (${reason})`);
