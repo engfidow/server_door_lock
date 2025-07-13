@@ -2,6 +2,7 @@ const express = require('express');
 const http = require('http');
 const socketIo = require('socket.io');
 const { exec } = require('child_process');
+const fs = require('fs');
 
 const app = express();
 const server = http.createServer(app);
@@ -18,64 +19,112 @@ const PORT = process.env.PORT || 5001;
 let isDoorLocked = true;
 const RELAY_PIN = 17;
 
-// Improved GPIO control
-function gpioWrite(pin, value) {
+// Check if running on Raspberry Pi
+const isRaspberryPi = fs.existsSync('/proc/device-tree/model');
+
+// Improved GPIO control with multiple fallbacks
+async function controlGpio(pin, value) {
   return new Promise((resolve, reject) => {
-    exec(`gpio -g mode ${pin} out && gpio -g write ${pin} ${value}`, 
-      (error, stdout, stderr) => {
-        if (error) {
-          console.error(`GPIO error: ${error.message}`);
-          reject(error);
-        } else {
-          resolve();
-        }
+    if (!isRaspberryPi) {
+      console.log(`Simulating GPIO ${pin} set to ${value}`);
+      resolve();
+      return;
+    }
+
+    // Try gpio command first
+    exec(`gpio -v`, (error) => {
+      if (error) {
+        // Fallback to Python if gpio command not found
+        console.log('Using Python fallback for GPIO control');
+        exec(`python3 -c "import RPi.GPIO as GPIO; GPIO.setmode(GPIO.BCM); GPIO.setup(${pin}, GPIO.OUT); GPIO.output(${pin}, ${value});"`, 
+          (pyError) => {
+            if (pyError) {
+              reject(new Error(`GPIO control failed: ${pyError.message}`));
+            } else {
+              resolve();
+            }
+          }
+        );
+      } else {
+        // Use gpio command if available
+        exec(`gpio -g mode ${pin} out && gpio -g write ${pin} ${value}`, 
+          (gpioError) => {
+            if (gpioError) {
+              reject(new Error(`GPIO command failed: ${gpioError.message}`));
+            } else {
+              resolve();
+            }
+          }
+        );
       }
-    );
+    });
   });
 }
 
 // HTTP API endpoints
 app.get('/open', async (req, res) => {
   try {
-    await unlockDoor();
+    await controlGpio(RELAY_PIN, 1);
+    isDoorLocked = false;
+    io.emit('door_status', { locked: false, source: 'http' });
     res.json({ status: 'success', message: 'Door unlocked', locked: false });
   } catch (error) {
-    res.status(500).json({ status: 'error', message: error.message });
+    res.status(500).json({ 
+      status: 'error', 
+      message: error.message,
+      suggestion: 'Ensure GPIO tools are installed or running on Raspberry Pi'
+    });
   }
 });
 
 app.get('/lock', async (req, res) => {
   try {
-    await lockDoor();
+    await controlGpio(RELAY_PIN, 0);
+    isDoorLocked = true;
+    io.emit('door_status', { locked: true, source: 'http' });
     res.json({ status: 'success', message: 'Door locked', locked: true });
   } catch (error) {
-    res.status(500).json({ status: 'error', message: error.message });
+    res.status(500).json({ 
+      status: 'error', 
+      message: error.message,
+      suggestion: 'Ensure GPIO tools are installed or running on Raspberry Pi'
+    });
   }
 });
 
-// Socket.io connection with enhanced stability
+// Socket.io connection
 io.on('connection', (socket) => {
-  console.log(`New client connected: ${socket.id}`);
+  console.log(`Client connected: ${socket.id}`);
   
-  // Send current status
-  socket.emit('door_status', { locked: isDoorLocked });
+  socket.emit('door_status', { locked: isDoorLocked, source: 'socket' });
   
-  // Heartbeat monitoring
   socket.on('ping', (cb) => cb());
   
   socket.on('unlock_door', async () => {
     try {
-      await unlockDoor();
+      await controlGpio(RELAY_PIN, 1);
+      isDoorLocked = false;
+      io.emit('door_status', { locked: false, source: socket.id });
     } catch (error) {
-      console.error('Unlock error:', error);
+      console.error('Unlock failed:', error);
+      socket.emit('operation_error', { 
+        operation: 'unlock', 
+        error: error.message 
+      });
     }
   });
   
   socket.on('lock_door', async () => {
     try {
-      await lockDoor();
+      await controlGpio(RELAY_PIN, 0);
+      isDoorLocked = true;
+      io.emit('door_status', { locked: true, source: socket.id });
     } catch (error) {
-      console.error('Lock error:', error);
+      console.error('Lock failed:', error);
+      socket.emit('operation_error', { 
+        operation: 'lock', 
+        error: error.message 
+      });
     }
   });
   
@@ -84,36 +133,7 @@ io.on('connection', (socket) => {
   });
 });
 
-async function unlockDoor() {
-  if (isDoorLocked) {
-    console.log('Unlocking door...');
-    try {
-      await gpioWrite(RELAY_PIN, 1);
-      isDoorLocked = false;
-      console.log('Door unlocked');
-      io.emit('door_status', { locked: false });
-    } catch (error) {
-      console.error('Unlock failed:', error);
-      throw error;
-    }
-  }
-}
-
-async function lockDoor() {
-  if (!isDoorLocked) {
-    console.log('Locking door...');
-    try {
-      await gpioWrite(RELAY_PIN, 0);
-      isDoorLocked = true;
-      console.log('Door locked');
-      io.emit('door_status', { locked: true });
-    } catch (error) {
-      console.error('Lock failed:', error);
-      throw error;
-    }
-  }
-}
-
 server.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
+  console.log(`Raspberry Pi detected: ${isRaspberryPi}`);
 });
