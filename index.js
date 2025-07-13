@@ -84,9 +84,10 @@ app.get('/lock', async (req, res) => {
     await controlGpio(RELAY_PIN, 0);
     isDoorLocked = true;
     
-    io.emit('door_status', { locked: false, source: 'api' });
 
-    res.json({ status: 'success', message: 'Door locked', locked: true });
+    io.emit('door_status', { locked: true, source: 'api' });
+res.json({ status: 'success', message: 'Door locked', locked: true });
+
   } catch (error) {
     res.status(500).json({ 
       status: 'error', 
